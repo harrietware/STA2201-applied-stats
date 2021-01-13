@@ -1,1 +1,1 @@
-# STAT2201-applied-stats
+# STA2201-applied-stats
