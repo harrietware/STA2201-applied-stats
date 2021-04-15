@@ -116,12 +116,12 @@ mod <- stan(data = stan_data,
              iter = 500,
              seed = 243)
 ext_fit <- extract(mod)
-save(ext_fit, file="ext_fit.Rdata")
+save(ext_fit, file="output/ext_fit.Rdata")
 ```
 
 ```{r}
 # load MCMC samples from fitted stan model
-load(file = "ext_fit.Rdata")
+load(file = "output/ext_fit.Rdata")
 ```
 
 We can use the MCMC samples to construct 95% credible intervals for the proportion of non-AIDS deaths that are maternal for 5-year periods from 1985.5 to 2015.5. We will do this for one country with data, Argentina, and one country without any observed data, the Bahamas. 
