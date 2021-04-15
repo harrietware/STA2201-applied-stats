@@ -1,0 +1,185 @@
+---
+title: "Sample Code"
+subtitle: Harriet Ware
+output: 
+  pdf_document:
+fontsize: 11pt
+---
+
+```{r setup,include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 10,fig.height = 5.7)
+library(tidyverse)
+library(rstan)
+library(kableExtra)
+library(here)
+theme_set(theme_bw(base_size=14))
+```
+
+# Maternal mortality
+
+This analysis relates to estimating the maternal mortality for countries worldwide. A maternal death is defined by the World Health Organization as "the death of a woman while pregnant or within 42 days of termination of pregnancy, irrespective of the duration and site of the pregnancy, from any cause related to or aggravated by the pregnancy or its management but not from accidental or incidental causes". The indicator we are interested in is the (non-AIDS) maternal mortality ratio (MMR) which is defined as the number of non-AIDS maternal deaths divided by the number of live births.
+
+The first data file relevant to this question is `mmr_data`, which contains information on, for a range of countries over a range of years:
+
+- Observations of the proportion of non-AIDS deaths that are maternal ($PM^{NA}$) 
+- Data source, most commonly from Vital Registration systems (VR)
+- The Gross Domestic Product (GDP) 
+- The General Fertility Rate (GFR) 
+- The average number of skilled attendants at birth (SAB)
+- The geographical region of the country
+- The total number of women, births, deaths to women of reproductive age (WRA), and the estimated proportion of all WRA deaths that are due to HIV/AIDS
+
+The `mmr_data` file will be used for fitting. Note that data on $PM^{NA}$ is not available for every country. 
+
+The `mmr_pred` file contains information on GDP, GFR, SAB, total number of births, deaths and women, and proportion of deaths that are due to HIV/AIDS, for every country at different time points (every five years from mid 1985 to mid 2015). Information in this file is used for producing estimates of MMR for countries without data, and for producing estimates centered at a particular time point. 
+
+Consider the following model:
+$$
+\begin{aligned}
+y_{i} | \eta_{c[i]}^{\text {country }}, \eta_{r[i]}^{\text {region }} & \sim N\left(\beta_{0}+\eta_{c[i]}^{\text {country }}+\eta_{r[i]}^{\text {region }}+\beta_{1} x_{i, 1}+\beta_{2} x_{i, 2}+\beta_{3} x_{i, 3}, \sigma_{y}^{2}\right) \\
+\eta_{c}^{\text {country }} & \sim N\left(0,\left(\sigma_{\eta}^{\text {country }}\right)^{2}\right), \text { for } c=1,2, \ldots, C \\
+\eta_{r}^{\text {region }} & \sim N\left(0,\left(\sigma_{\eta}^{\text {region }}\right)^{2}\right), \text { for } r=1,2, \ldots, R
+\end{aligned}
+$$
+where
+
+- $y_i$ is the $i$th observed $\log PM^{NA}$ in country $c[i]$ in region $r[i]$
+- $C$ is total number of countries and $R$ is total number of regions
+- $x_{i,1}$ is log(GDP)
+- $x_{i,2}$ is log(GFR)
+- $x_{i,3}$ is SAB
+
+We will turn this model into a Bayesian model by specifying appropriate prior distributions for the hyper-parameters. We can specify weakly informative priors on all the parameters, i.e., for the $\beta$s
+
+$$
+\beta \sim N(0, 1)
+$$
+
+and for \(\sigma_{y}, \sigma_{\eta}^{\text {country}}\) and \(\sigma_{\eta}^{\text {region}}\)
+
+$$
+\sigma \sim N^+(0,1)
+$$
+where the plus indicates Half Normal. 
+
+We can fit the Bayesian model in Stan. The Stan model code is provided in `mmr.stan` and the fitted model is available in `mmr_model.Rdata`.
+
+```{r}
+# read in the data
+mmr_data <- read_csv(here("data","mmr_data.csv"))
+mmr_pred<-read_csv(here("data","mmr_pred.csv"))
+```
+
+```{r}
+# obtain the values and indexes required for model
+mmr_pred$country_code <- as.numeric(factor(mmr_pred$iso)) 
+country_codes <- mmr_pred %>% 
+  select(iso,country_code)%>% 
+  distinct() # a list of all unique iso codes
+C <- max(mmr_pred$country_code) # number of iso codes (countries)
+
+mmr_pred$region_code <- as.numeric(factor(mmr_pred$region)) 
+region_codes <- mmr_pred %>% 
+  select(region,region_code) %>%
+  distinct() # a list of all unique regions
+R <- max(mmr_pred$region_code) # number of regions
+```
+
+```{r}
+mmr_data <- left_join(mmr_data, country_codes) # country of the ith observation
+mmr_data <-  left_join(mmr_data, region_codes) # region of the ith observation
+```
+
+```{r}
+# get data in stan format
+stan_data <- list(N = nrow(mmr_data), # data for fitting
+                  C = C,
+                  R = R,
+                  country = mmr_data$country_code,
+                  region = mmr_data$region_code,
+                  y = log(mmr_data$PM_na),
+                  x1 = log(mmr_data$GDP),
+                  x2 = log(mmr_data$GFR),
+                  x3 = mmr_data$SAB,
+                  pred_N = nrow(mmr_pred), # data for prediction
+                  new_country = mmr_pred$country_code,
+                  new_region = mmr_pred$region_code,
+                  new_x1 = log(mmr_pred$GDP),
+                  new_x2 = log(mmr_pred$GFR),
+                  new_x3 = mmr_pred$SAB)
+```
+
+```{r, include = FALSE, eval = FALSE}
+mod <- stan(data = stan_data, 
+             file = "code/models/mmr.stan",
+             iter = 500,
+             seed = 243)
+ext_fit <- extract(mod)
+save(ext_fit, file="ext_fit.Rdata")
+```
+
+```{r}
+# load MCMC samples from fitted stan model
+load(file = "ext_fit.Rdata")
+```
+
+We can use the MCMC samples to construct 95% credible intervals for the proportion of non-AIDS deaths that are maternal for 5-year periods from 1985.5 to 2015.5. We will do this for one country with data, Argentina, and one country without any observed data, the Bahamas. 
+
+```{r}
+# get predictions and CIs of PM_na
+mmr_pred$y_pred = exp(apply(ext_fit$y_pred, 2, mean))
+mmr_pred$y_lower = exp(apply(ext_fit$y_pred, 2, quantile, probs = 0.025))
+mmr_pred$y_upper = exp(apply(ext_fit$y_pred, 2, quantile, probs = 0.975))
+```
+
+```{r}
+# plot the results
+mmr_pred %>% 
+  filter(Country=="Bahamas") %>%
+  ggplot(aes(x=mid.date, y=y_pred)) +
+    geom_point(size=2, color="steelblue") +
+    geom_errorbar(aes(ymin=y_lower, ymax=y_upper), width=1, color="steelblue") +
+    labs(title="Proportion of non-AIDS deaths that are maternal, Bahamas",
+       y="Proportion", x="Period (5-year period centered at mid-year)") +
+    scale_x_continuous(breaks=c(1985, 1990, 1995, 2000, 2005, 2010, 2015))
+
+mmr_pred %>% 
+  filter(Country=="Argentina") %>%
+  ggplot(aes(x=mid.date,y=y_pred,color="Prediction")) +
+    geom_point(size=2) +
+    geom_errorbar(aes(ymin=y_lower, ymax=y_upper), width=1) +
+    geom_point(data=mmr_data %>% 
+                 filter(Country=="Argentina"),
+               aes(x=mid.date, y=PM_na, color="Observed"), size=2) +
+    labs(title="Proportion of non-AIDS deaths that are maternal, Argentina",
+       y="Proportion", x="Period (5-year period centered at mid-year)") +
+    scale_x_continuous(breaks=c(1985, 1990, 1995, 2000, 2005, 2010, 2015)) +
+    scale_color_manual(values=c('firebrick','steelblue')) +
+    theme(legend.title=element_blank())
+```
+
+```{r}
+# results tables
+mmr_pred %>% 
+  filter(Country=="Bahamas") %>%
+  select(mid.date, y_pred, y_lower, y_upper) %>%
+  kable("latex", 
+        col.names=c("Period","Estimate","2.5%","97.5%"), 
+        digits=4,
+        booktabs=TRUE, 
+        caption="Proportion of non-AIDS deaths that are maternal, Bahamas") %>%
+  add_header_above(c("","Proportion"=3)) %>%
+  kable_styling(latex_options="HOLD_position")
+
+mmr_pred %>% 
+  filter(Country=="Argentina")%>%
+  select(mid.date,y_pred,y_lower,y_upper) %>%
+  kable("latex", 
+        col.names=c("Period","Estimate","2.5%","97.5%"), 
+        digits=4,
+        booktabs=TRUE, 
+        caption="Proportion of non-AIDS deaths that are maternal, Argentina") %>%
+  add_header_above(c("","Proportion"=3))%>%
+  kable_styling(latex_options="HOLD_position")
+```
